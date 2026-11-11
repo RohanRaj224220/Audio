@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+ body{margin:0;font-family:system-ui,-apple-system,sans-serif;font-size:14px;color:#222}
+ #bar{display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid #d5d9e0;
+      border-radius:10px;background:#f6f8fb}
+ button{font-size:15px;padding:8px 18px;border-radius:8px;border:0;background:#3B6FD4;color:#fff;
+        cursor:pointer;min-width:96px}
+ button:disabled{background:#9aa7bd;cursor:default}
+ #seek{flex:1}
+ #time{font-variant-numeric:tabular-nums;min-width:100px;text-align:right}
+ #note{padding:6px 4px 0;color:#666;font-size:12.5px;min-height:16px}
+</style></head><body>
+<div id="bar"><button id="play" disabled>Loading…</button>
+ <input id="seek" type="range" min="0" max="1" step="0.01" value="0"><span id="time">0:00 / 0:00</span></div>
+<div id="note"></div>
+<script>
+const EQ=[60,170,310,600,1000,3000,6000,12000];
+const play=document.getElementById('play'),seek=document.getElementById('seek'),
+      time=document.getElementById('time'),note=document.getElementById('note');
+let ctx=null,out=null,tracks=[],args=null,loadedKey='',playing=false,seeking=false,loadId=0;
+
+function send(type,data){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},data||{}),'*')}
+function fmt(t){t=Math.max(0,t||0);return Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0')}
+function rate(t){return Math.min(4,Math.max(0.25,t.speed||1))}
+
+function wire(tr){               // element -> tone filters -> volume -> limiter -> speakers
+  const src=ctx.createMediaElementSource(tr.el);let node=src;
+  const mk=(type,f,q)=>{const b=ctx.createBiquadFilter();b.type=type;b.frequency.value=f;
+    if(q)b.Q.value=q;node.connect(b);node=b;return b};
+  tr.bass=mk('lowshelf',100);tr.mid=mk('peaking',1000,0.667);tr.treble=mk('highshelf',4000);
+  tr.eq=EQ.map(f=>mk('peaking',f,1.414));
+  tr.gain=ctx.createGain();node.connect(tr.gain);tr.gain.connect(out);
+}
+function ensureCtx(){
+  if(ctx)return;
+  ctx=new (window.AudioContext||window.webkitAudioContext)();
+  out=ctx.createDynamicsCompressor();out.threshold.value=-2;out.knee.value=0;out.ratio.value=20;
+  out.attack.value=0.003;out.release.value=0.1;out.connect(ctx.destination);
+  tracks.forEach(wire);apply();
+}
+function apply(){                // push the current slider values into the running audio
+  if(!args)return;
+  tracks.forEach((tr,i)=>{const s=args.tracks[i];if(!s)return;
+    tr.el.playbackRate=rate(s);
+    if(!ctx||!tr.gain)return;
+    const now=ctx.currentTime,set=(p,v)=>p.setTargetAtTime(v,now,0.03);
+    set(tr.bass.gain,s.bass);set(tr.mid.gain,s.mid);set(tr.treble.gain,s.treble);
+    EQ.forEach((f,k)=>set(tr.eq[k].gain,(s.eq||{})[f]||0));set(tr.gain.gain,s.volume)});
+  const bits=[];
+  if(args.pitch)bits.push('Pitch ('+(args.pitch>0?'+':'')+args.pitch+') is not played live. Use Render Preview to hear it.');
+  if(args.note)bits.push(args.note);
+  note.textContent=bits.join('  ');
+}
+async function load(a){
+  const id=++loadId;pauseAll();
+  tracks.forEach(t=>{t.el.pause();URL.revokeObjectURL(t.el.src)});
+  tracks=[];play.disabled=true;play.textContent='Loading…';
+  if(ctx){ctx.close();ctx=null}
+  const made=[];
+  for(const t of a.tracks){
+    const blob=await (await fetch(t.url)).blob();
+    if(id!==loadId)return;
+    const el=new Audio(URL.createObjectURL(blob));el.preservesPitch=true;el.preload='auto';
+    await new Promise(r=>{el.addEventListener('loadedmetadata',r,{once:true});el.addEventListener('error',r,{once:true})});
+    made.push({el});
+  }
+  if(id!==loadId)return;
+  tracks=made;seek.max=tracks[0]?tracks[0].el.duration||1:1;seek.value=0;
+  play.disabled=!tracks.length;play.textContent='▶ Play';apply();
+}
+function pauseAll(){tracks.forEach(t=>t.el.pause());playing=false;play.textContent='▶ Play'}
+function setTime(v){tracks.forEach(t=>{try{t.el.currentTime=Math.min(v,(t.el.duration||v))}catch(e){}})}
+play.onclick=async()=>{
+  if(playing){pauseAll();return}
+  ensureCtx();await ctx.resume();
+  const lead=tracks[0].el;if(lead.ended||lead.currentTime>=lead.duration-0.05)setTime(0);else setTime(lead.currentTime);
+  await Promise.all(tracks.map(t=>t.el.play().catch(()=>{})));playing=true;play.textContent='⏸ Pause';
+};
+seek.oninput=()=>{seeking=true;time.textContent=fmt(+seek.value)+' / '+fmt(+seek.max)};
+seek.onchange=()=>{setTime(+seek.value);seeking=false};
+setInterval(()=>{
+  if(!tracks.length)return;const lead=tracks[0].el;
+  if(!seeking){seek.value=lead.currentTime;time.textContent=fmt(lead.currentTime)+' / '+fmt(lead.duration)}
+  if(playing){
+    if(lead.ended){pauseAll();return}
+    tracks.slice(1).forEach(t=>{          // keep the parts together (when they share one speed)
+      if(Math.abs(t.el.playbackRate-lead.playbackRate)<1e-6&&Math.abs(t.el.currentTime-lead.currentTime)>0.07&&!t.el.ended)
+        t.el.currentTime=lead.currentTime})}
+},200);
+window.addEventListener('message',e=>{
+  if(!e.data||e.data.type!=='streamlit:render')return;
+  args=e.data.args;const key=args.tracks.map(t=>t.url).join('|');
+  if(key!==loadedKey){loadedKey=key;load(args)}else apply();
+});
+send('streamlit:componentReady',{apiVersion:1});send('streamlit:setFrameHeight',{height:86});
+</script></body></html>

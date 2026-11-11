@@ -40,6 +40,9 @@ st.set_page_config(page_title="Media Audio Studio", page_icon="🎵", layout="wi
 
 log = logging.getLogger("mas.ui")
 
+LIVE_DIR = Path(__file__).resolve().parent / "live_player"
+_live_player = components.declare_component("live_player", path=str(LIVE_DIR))
+
 PART_LABELS = {"drums": "🥁 Drums", "bass": "🎸 Bass", "guitar": "🎸 Guitar", "piano": "🎹 Piano",
                "other": "🎻 Other instruments"}
 TRACK_LABELS = {TRACK_ORIGINAL: "Original", TRACK_INSTRUMENTAL: "Instrumental (no vocals)",
@@ -407,9 +410,18 @@ def tab_vocals() -> None:
                     help="Removes more of the music left in the vocals and of the voice left in "
                          "the music. Can make the sound slightly thinner; switch off and "
                          "separate again if you prefer.")
-        label = "🎤 Separate Again" if project.stems else "🎤 Remove Vocals"
-        if st.button(label, type="secondary" if project.stems else "primary"):
+        b1, b2 = st.columns(2)
+        label = "🎤 Separate Vocals Again" if project.stems else "🎤 Remove Vocals only"
+        if b1.button(label, width="stretch"):
             run_separation(project)
+        if b2.button("🥁 Separate Everything (vocals + each instrument)", type="primary",
+                     width="stretch",
+                     help="Vocals, then drums, bass, guitar, piano and other instruments as "
+                          "separate pieces."):
+            run_separation(project, then_split=True)
+        if not project.stems:
+            st.caption("**Separate Everything** gives you the vocals and every instrument as its "
+                       "own piece to download, change or place anywhere in the song.")
 
     if project.stems:
         st.divider()
@@ -420,7 +432,7 @@ def tab_vocals() -> None:
                 piece_card(project, track, label)
 
         st.divider()
-        st.subheader("Split the music into instruments")
+        st.subheader("🥁 Instrument Separator")
         parts = [p for p in INSTRUMENT_STEMS if p in project.stems]
         st.write("Splits the instrumental into separate pieces: drums, bass, guitar, piano and "
                  "everything else. Only instruments that are in the song get a piece; "
@@ -524,7 +536,7 @@ def choose_track(key: str) -> None:
              format_func=TRACK_LABELS.get, key=key, on_change=_set, horizontal=True)
 
 
-def run_separation(project) -> None:
+def run_separation(project, then_split: bool = False) -> None:
     job_dir = file_utils.job_path(project.job_id)
     if not sep.model_is_cached():
         st.info("Downloading AI separation model on first use. This only happens once.")
@@ -551,6 +563,9 @@ def run_separation(project) -> None:
     project.stems = {k: str(v) for k, v in stems.items()}
     st.session_state.current_track = TRACK_MIX
     sm.save_project(st.session_state)
+    if then_split:
+        run_instrument_split(project)  # reruns itself on success; on failure keep its message
+        return
     st.rerun()
 
 
@@ -777,9 +792,57 @@ def settings_panel(prefix: str) -> None:
                                key=sm.eq_key(band, prefix))
 
 
+def live_media_url(job_id: str, wav: str) -> str:
+    """Put an MP3 copy of a track where the live player (in the browser) can fetch it."""
+    src = Path(wav)
+    mp3 = src.with_suffix(".mp3")
+    if not mp3.exists() or mp3.stat().st_mtime < src.stat().st_mtime:
+        renderer.convert_audio(src, mp3, "preview")
+    media = LIVE_DIR / "media"
+    media.mkdir(parents=True, exist_ok=True)
+    name = f"{job_id}_{src.stem}_{int(mp3.stat().st_mtime)}.mp3"
+    if not (media / name).exists():
+        for old in media.glob("*.mp3"):  # drop stale copies (other versions, old jobs)
+            if old.name.startswith(f"{job_id}_{src.stem}_") or \
+                    time.time() - old.stat().st_mtime > file_utils.JOB_MAX_AGE_SECONDS:
+                old.unlink(missing_ok=True)
+        shutil.copy(mp3, media / name)
+    return f"media/{name}"
+
+
+def live_player(project) -> None:
+    """Plays the current track in the browser; slider changes are heard while it plays."""
+    try:
+        tracks, pitch = [], 0.0
+        for path, chain in sm.render_layers(st.session_state, keep_muted=True):
+            combined = {"url": live_media_url(project.job_id, path), "speed": 1.0, "volume": 1.0,
+                        "bass": 0.0, "mid": 0.0, "treble": 0.0, "eq": {str(b): 0.0 for b in EQ_BANDS}}
+            for s in chain:  # settings applied one after another add up (dB) or multiply
+                combined["speed"] *= s.speed
+                combined["volume"] *= s.volume
+                for name in ("bass", "mid", "treble"):
+                    combined[name] += getattr(s, name)
+                for band in EQ_BANDS:
+                    combined["eq"][str(band)] += s.eq[band]
+            tracks.append(combined)
+            pitch = max(pitch, sum(s.pitch for s in chain), key=abs)
+    except Exception:  # noqa: BLE001
+        log.exception("Live player setup failed")
+        return
+    st.markdown(f"**🔊 Live player** — {TRACK_LABELS[st.session_state.current_track]}")
+    _live_player(tracks=tracks, pitch=int(pitch), note="", key="live_player", default=None)
+    st.caption("Press Play, then move any slider below: you hear the change as soon as you let "
+               "go of the slider. It plays the whole song without your clip edits; "
+               "use Render Preview to hear the finished result.")
+
+
 def tab_sound() -> None:
     show_flash("sound")
     project = st.session_state.project
+    if project is not None:
+        if project.stems:
+            choose_track(key="track_sound_tab")
+        live_player(project)
     has_stems = bool(project and all(t in project.stems for t in (TRACK_VOCALS, TRACK_INSTRUMENTAL)))
     if not has_stems:
         st.caption("Tip: after Remove Vocals you can also change the vocals and the music separately.")
@@ -1134,7 +1197,7 @@ def main() -> None:
             sm.init_widgets(st.session_state, force=True, prefix=prefix)
         sm.sync_settings_from_widgets(st.session_state)
 
-    tabs = st.tabs(["📂 Import", "🎤 Vocal Remover", "✂️ Editor", "🎚 Sound Controls",
+    tabs = st.tabs(["📂 Import", "🎤 Vocals & Instruments", "✂️ Editor", "🎚 Sound Controls",
                     "▶ Preview", "💾 Export", "📝 Lyrics"])
     with tabs[0]:
         tab_import()

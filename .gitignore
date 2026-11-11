@@ -1,6 +1,7 @@
 .venv/
 workspace/
 logs/
+live_player/media/
 __pycache__/
 .pytest_cache/
 *.pyc

@@ -108,7 +108,8 @@ def sync_settings_from_widgets(state: MutableMapping) -> None:
                               for stem, p in STEM_PREFIX.items()}
 
 
-def render_layers(state: MutableMapping) -> list[tuple[str, list[AudioSettings]]]:
+def render_layers(state: MutableMapping,
+                  keep_muted: bool = False) -> list[tuple[str, list[AudioSettings]]]:
     """[(track_path, [stem settings, whole-song settings]), ...] for the current track."""
     project: Project = state["project"]
     track = state.get("current_track", TRACK_ORIGINAL)
@@ -135,6 +136,8 @@ def render_layers(state: MutableMapping) -> list[tuple[str, list[AudioSettings]]
     else:
         layers = [(project.track_path(track), [stems[track], master])]
     # A piece turned down to 0% is simply left out (saves rendering time).
+    if keep_muted:
+        return layers
     audible = [l for l in layers if all(s.volume > 1e-6 for s in l[1])]
     return audible or layers[-1:]
 

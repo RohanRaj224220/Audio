@@ -15,7 +15,7 @@ APP = str(Path(__file__).resolve().parents[1] / "streamlit_app.py")
 def test_app_starts_without_errors():
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception
-    assert [t.label for t in at.tabs][:6] == ["📂 Import", "🎤 Vocal Remover", "✂️ Editor",
+    assert [t.label for t in at.tabs][:6] == ["📂 Import", "🎤 Vocals & Instruments", "✂️ Editor",
                                              "🎚 Sound Controls", "▶ Preview", "💾 Export"]
     assert at.session_state.project is None
 
