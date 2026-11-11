@@ -1,0 +1,18 @@
+# CPU-only PyTorch wheels (much smaller than the default CUDA build on Linux).
+# A local machine with an NVIDIA GPU can remove this line to get CUDA builds.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+streamlit>=1.50
+numpy
+soundfile>=0.12
+librosa>=0.10
+matplotlib
+torch>=2.1
+# 4.1+ downloads models from the Hugging Face hub and no longer needs torchaudio.
+demucs>=4.1
+# High-quality vocal separation (Mel-Band RoFormer). Runs in separation_worker.py.
+audio-separator[cpu]>=0.30
+# Download from YouTube / SoundCloud links. The "deno" extra installs the JavaScript
+# runtime YouTube now requires, so no system package is needed.
+yt-dlp[default,deno]
+pytest

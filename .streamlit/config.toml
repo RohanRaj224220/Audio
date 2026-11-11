@@ -1,0 +1,17 @@
+[server]
+# Streamlit's hard limit (MB). The app itself rejects files above MAX_UPLOAD_MB (default 200)
+# with a friendly message, so keep this a little higher.
+maxUploadSize = 300
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Never show Python stack traces to users; details go to logs/application.log.
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#3B6FD4"
