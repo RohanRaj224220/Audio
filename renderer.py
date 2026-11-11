@@ -8,7 +8,7 @@ from pathlib import Path
 
 import audio_processor as ap
 import ffmpeg_utils
-from models import AudioSettings, Clip, ValidationError
+from models import AudioSettings, Clip, Overlay, ValidationError
 
 log = logging.getLogger("mas.render")
 
@@ -71,13 +71,18 @@ def render_timeline(clips: list[Clip], track_path: str, settings, out_path: Path
 
 
 def render_layers(clips: list[Clip], layers: list[tuple[str, object]], out_path: Path,
-                  fmt: str = "wav") -> Path:
+                  fmt: str = "wav", overlays: list[Overlay] | None = None) -> Path:
     """Render the same clip timeline from several time-aligned tracks and mix them.
 
     `layers` is [(track_path, settings_or_list), ...]. Each layer gets its own
     speed/pitch/tone/volume; the layers are then summed (no auto-normalising)
-    and peak-limited.
+    and peak-limited. `overlays` are extra pieces of sound mixed on top at their
+    own position in the finished song (they are not affected by the settings).
     """
+    overlays = list(overlays or [])
+    for ov in overlays:
+        if ov.duration <= 0 or ov.position < 0 or not Path(ov.source_path).exists():
+            raise ValidationError(f"The added layer “{ov.name}” is not valid.")
     if fmt not in FORMATS:
         raise ValueError(f"Unknown format {fmt}")
     if not layers:
@@ -91,7 +96,7 @@ def render_layers(clips: list[Clip], layers: list[tuple[str, object]], out_path:
              len(clips), len(layers), out_path, fmt, use_rb, [p[2] for p in plans])
     encode = ["-ar", str(ap.SAMPLE_RATE), "-ac", "2", *FORMATS[fmt]]
     try:
-        if len(plans) == 1 and not plans[0][2]:
+        if len(plans) == 1 and not plans[0][2] and not overlays:
             path, filters, _ = plans[0]
             inputs, graph = _timeline_command(clips, path, filters + [ap.limiter_filter()], use_rb)
             ffmpeg_utils.run_ffmpeg([*inputs, "-filter_complex", graph, "-map", "[out]",
@@ -113,12 +118,22 @@ def render_layers(clips: list[Clip], layers: list[tuple[str, object]], out_path:
             args: list[str] = []
             for stage in stems:
                 args += ["-i", str(stage)]
-            if len(stems) == 1:
+            labels = "".join(f"[{i}:a]" for i in range(len(stems)))
+            chains = []
+            for k, ov in enumerate(overlays):
+                args += ["-ss", f"{ov.start:.3f}", "-t", f"{ov.duration:.3f}", "-i", ov.source_path]
+                chain = [f"aformat=sample_fmts=fltp:sample_rates={ap.SAMPLE_RATE}:channel_layouts=stereo",
+                         *ap.volume_filters(ov.volume)]
+                if ov.position > 0:
+                    chain.append(f"adelay={int(round(ov.position * 1000))}:all=1")
+                chains.append(f"[{len(stems) + k}:a]{','.join(chain)}[ov{k}]")
+                labels += f"[ov{k}]"
+            total = len(stems) + len(overlays)
+            if total == 1:
                 graph = f"[0:a]{ap.limiter_filter()}[out]"
             else:
-                labels = "".join(f"[{i}:a]" for i in range(len(stems)))
-                graph = (f"{labels}amix=inputs={len(stems)}:normalize=0:duration=longest,"
-                         f"{ap.limiter_filter()}[out]")
+                graph = ";".join(chains + [f"{labels}amix=inputs={total}:normalize=0:"
+                                           f"duration=longest,{ap.limiter_filter()}[out]"])
             ffmpeg_utils.run_ffmpeg([*args, "-filter_complex", graph, "-map", "[out]", *encode,
                                      str(out_path)])
         return out_path

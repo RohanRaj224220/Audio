@@ -59,6 +59,23 @@ deleted automatically. A job in use by any open session gets touched on every in
 
 Logs go to `logs/application.log`, never to the screen.
 
+## What's new: instruments, layers, merging, lyrics
+
+- **Split into instruments** (Vocal Remover tab, after Remove Vocals): the instrumental is split with the
+  Demucs 6-stem model into drums, bass, guitar, piano and "other". Instruments that aren't in the song get no
+  piece. There is no separate piece for flute, strings or synths; they are in "Other instruments". The pieces
+  add back up to exactly the instrumental. Every piece downloads as MP3 or lossless FLAC, or all together as a ZIP.
+- **Per-instrument sound controls:** each piece gets its own Sound Controls tab. Volume 0% removes it.
+- **Add a piece on top of the song** (Editor tab): place any range of any piece, or of an uploaded sound
+  (a new instrument, a beat), at any time in the finished song.
+- **Editor:** split at several positions or into equal pieces, merge clips back together, redo, per-clip speed.
+- **Merge another song or video onto the end** (Import tab). MP3, MP4 and the other types can be mixed.
+- **MP4 export for audio-only projects** (black picture with the sound).
+- **Lyrics tab:** word-timed lyrics from the vocals (faster-whisper, model set by `MAS_WHISPER_MODEL`,
+  default `small`), an editable table, LRC / SRT / ASS karaoke downloads that follow your edits, and a karaoke
+  player. Lyrics are not burned into the MP4 picture.
+- **FLAC** is the default export format: lossless and about half the size of WAV.
+
 ## Import from YouTube or SoundCloud
 
 On the **Import** tab, choose **Audio (MP3)** or **Video (MP4)**, paste a YouTube or SoundCloud link and click

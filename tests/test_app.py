@@ -58,4 +58,4 @@ def test_editor_preview_export_with_loaded_project(tone_wav):
     export = [b for b in at.button if "Export Audio" in b.label][0]
     export.click().run()
     assert not at.exception
-    assert Path(at.session_state.exports["mp3"]).exists()
+    assert Path(at.session_state.exports["flac"]).exists()

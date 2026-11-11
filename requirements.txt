@@ -2,7 +2,7 @@
 # A local machine with an NVIDIA GPU can remove this line to get CUDA builds.
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-streamlit>=1.50
+streamlit>=1.53
 numpy
 soundfile>=0.12
 librosa>=0.10
@@ -15,4 +15,6 @@ audio-separator[cpu]>=0.30
 # Download from YouTube / SoundCloud links. The "deno" extra installs the JavaScript
 # runtime YouTube now requires, so no system package is needed.
 yt-dlp[default,deno]
+# Karaoke lyrics with word timings (Lyrics tab).
+faster-whisper>=1.1
 pytest

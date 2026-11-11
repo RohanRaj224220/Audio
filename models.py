@@ -23,8 +23,12 @@ TRACK_ORIGINAL = "original"
 TRACK_INSTRUMENTAL = "instrumental"
 TRACK_VOCALS = "vocals"
 TRACK_MIX = "mix"  # vocals + instrumental, each with its own settings, mixed together
-TRACKS = (TRACK_ORIGINAL, TRACK_INSTRUMENTAL, TRACK_VOCALS, TRACK_MIX)
 STEMS = (TRACK_VOCALS, TRACK_INSTRUMENTAL)
+# Pieces the instrumental can be split into (Demucs 6-stem model). Instruments without
+# their own piece (flute, strings, synths, ...) end up in "other".
+INSTRUMENT_STEMS = ("drums", "bass", "guitar", "piano", "other")
+ALL_STEMS = STEMS + INSTRUMENT_STEMS
+TRACKS = (TRACK_ORIGINAL, TRACK_INSTRUMENTAL, TRACK_VOCALS, TRACK_MIX) + INSTRUMENT_STEMS
 
 KIND_AUDIO = "audio"
 KIND_SILENCE = "silence"
@@ -80,6 +84,30 @@ class Clip:
     def from_dict(cls, data: dict) -> "Clip":
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         return cls(**known)
+
+
+@dataclass
+class Overlay:
+    """An extra piece of sound laid on top of the song at `position` (seconds in the output)."""
+
+    source_path: str
+    start: float
+    end: float
+    position: float = 0.0
+    volume: float = 1.0
+    name: str = "Layer"
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Overlay":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass

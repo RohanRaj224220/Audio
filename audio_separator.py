@@ -130,17 +130,18 @@ def compute_device() -> str:
 
 
 @functools.lru_cache(maxsize=1)
-def load_model():
-    """Load (and on first use, download) the separation model. Process-wide cache."""
+def load_model(name: str = MODEL_NAME):
+    """Load (and on first use, download) a Demucs model. Keeps the last one in memory."""
     if not separation_available():
         raise SeparationUnavailable("torch/demucs not installed")
     from demucs.pretrained import get_model
 
-    log.info("Loading separation model %s (cached marker=%s)", MODEL_NAME, model_is_cached())
-    model = get_model(MODEL_NAME)
+    log.info("Loading separation model %s", name)
+    model = get_model(name)
     model.eval()
-    MODEL_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    MODEL_MARKER.touch()
+    if name == MODEL_NAME:
+        MODEL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        MODEL_MARKER.touch()
     return model
 
 
@@ -205,6 +206,98 @@ def _separate_worker(wav_path: Path, out_dir: Path,
     if result.get("kind") == "memory" or code in (-9, 137):
         raise SeparationMemoryError(result.get("message", "killed"))
     raise SeparationError(result.get("message", f"worker exited with {code}"))
+
+
+# 6-stem Demucs: drums, bass, guitar, piano, other (+ a vocals output we fold into "other").
+INSTRUMENT_MODEL = os.environ.get("MAS_INSTRUMENT_MODEL", "htdemucs_6s")
+# A piece that never gets louder than this (RMS over any 1 s) is treated as "not in this song".
+SILENT_PIECE_RMS = 0.006
+
+
+def split_instruments(instrumental_wav: Path, out_dir: Path,
+                      progress: Optional[Callable[[float, str], None]] = None) -> dict[str, Path]:
+    """Split the instrumental into drums / bass / guitar / piano / other WAV files.
+
+    Only instruments that are actually present get a file; anything too quiet to be a
+    real part is folded into "other", so the pieces always add back up to the instrumental.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        sources, sr = _demucs_sources(
+            Path(instrumental_wav), INSTRUMENT_MODEL,
+            (lambda v: progress(0.02 + 0.93 * v, f"Separating instruments... {int(v * 100)}%"))
+            if progress else None)
+        # "other" is everything the named pieces don't cover (including the model's leftover
+        # "vocals" output), so the pieces always add back up to exactly the instrumental.
+        sources.pop("other", None)
+        sources.pop("vocals", None)
+        other, _ = sf.read(str(instrumental_wav), dtype="float32", always_2d=True)
+        if other.shape[1] == 1:
+            other = np.repeat(other, 2, axis=1)
+        other = other[:, :2].copy()
+        result: dict[str, Path] = {}
+        win = sr
+        for name, data in list(sources.items()):
+            usable = data[: len(data) // win * win].reshape(-1, win, data.shape[1])
+            loudest = float(np.sqrt((usable ** 2).mean(axis=(1, 2))).max()) if len(usable) else 0.0
+            if loudest < SILENT_PIECE_RMS:
+                log.info("Instrument %s not present (loudest second %.4f); left in other",
+                         name, loudest)
+                continue
+            result[name] = _write_stem(out_dir / f"{name}.wav", data, sr)
+            other -= sf.read(str(result[name]), dtype="float32", always_2d=True)[0]
+        result["other"] = _write_stem(out_dir / "other.wav", other, sr)
+        if progress:
+            progress(1.0, "Done")
+        log.info("Instrument split finished: %s", result)
+        return result
+    except SeparationError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.exception("Instrument split failed")
+        if _is_oom(e):
+            raise SeparationMemoryError(str(e)) from e
+        raise SeparationError(str(e)) from e
+
+
+def _write_stem(path: Path, data: np.ndarray, sr: int) -> Path:
+    sf.write(str(path), np.clip(data, -1.0, 1.0), sr, subtype="PCM_16")
+    return path
+
+
+def _demucs_sources(wav_path: Path, model_name: str,
+                    progress: Optional[Callable[[float], None]] = None
+                    ) -> tuple[dict[str, np.ndarray], int]:
+    """Run a Demucs model; returns ({source name: float32 array (samples, 2)}, sample rate)."""
+    if not separation_available():
+        raise SeparationUnavailable("torch/demucs not installed")
+    import torch
+    from demucs.apply import apply_model
+
+    model = load_model(model_name)
+    device = compute_device()
+    log.info("Demucs %s on %s (%s, torch %s)", model_name, wav_path, device, torch.__version__)
+    data, sr = sf.read(str(wav_path), dtype="float32", always_2d=True)
+    if sr != model.samplerate:
+        raise SeparationError(f"Expected {model.samplerate} Hz input, got {sr}")
+    if data.shape[1] == 1:
+        data = np.repeat(data, 2, axis=1)
+    mix = torch.from_numpy(np.ascontiguousarray(data[:, :2].T))
+    length = mix.shape[-1]
+    ref = mix.mean(0)
+    mean, std = ref.mean(), ref.std() + 1e-8
+    mix = (mix - mean) / std
+
+    def _cb(d: dict) -> None:
+        if progress and d.get("state") == "end":
+            progress(min(1.0, (d.get("segment_offset", 0) + 1) / max(1, length)))
+
+    with torch.no_grad():
+        sources = apply_model(model, mix[None], device=device, shifts=1, split=True,
+                              overlap=0.25, progress=False, num_workers=0, callback=_cb)[0]
+    sources = sources * std  # the (tiny) mean offset stays in the remainder, not in every piece
+    return {n: sources[i].cpu().numpy().T for i, n in enumerate(model.sources)}, sr
 
 
 def _separate_demucs(wav_path: Path, out_dir: Path,
