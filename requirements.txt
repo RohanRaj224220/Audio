@@ -12,6 +12,8 @@ torch>=2.1
 demucs>=4.1
 # High-quality vocal separation (Mel-Band RoFormer). Runs in separation_worker.py.
 audio-separator[cpu]>=0.30
+# Downloads the separation model checkpoint (also pulled in by the two packages above).
+huggingface_hub
 # Download from YouTube / SoundCloud links. The "deno" extra installs the JavaScript
 # runtime YouTube now requires, so no system package is needed.
 yt-dlp[default,deno]
